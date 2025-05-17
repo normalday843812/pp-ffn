@@ -1,0 +1,37 @@
+# Experiment Identification
+project_name: "ppffn_latent_reasoning"
+experiment_name: "prosqa_base_sft"
+seed: 1
+
+# Model Parameters
+model_id: "gpt2-medium"
+load_model_path: "None"
+save_path: "results/"
+
+# Dataset Parameters
+dataset_name: "prosqa"
+train_path: "data/prosqa/prosqa_train.json"
+val_path: "data/prosqa/prosqa_valid.json"
+test_path: "data/prosqa/prosqa_test.json"
+max_seq_length: 1024
+
+# Training Hyperparameters
+lr: 3e-5
+weight_decay: 0.01
+batch_size_training: 4 # Adjust for your 4080
+gradient_accumulation_steps: 4
+num_epochs: 5 # Example, adjust based on convergence for ProsQA
+
+# Latent Loop / Coconut-Specific Parameters
+use_latent_loop: false
+
+# PP-FFN Specific Parameters
+ppffn_num_paths: null
+ppffn_path_intermediate_size: null
+ppffn_aggregation_method: null
+
+# Logging/Saving
+save_only_improve: true
+wandb_project: "ppffn_project_runs"
+debug: false
+metric_for_best_model: loss

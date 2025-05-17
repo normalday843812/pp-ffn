@@ -1,0 +1,45 @@
+# Experiment Identification
+project_name: "ppffn_latent_reasoning"
+experiment_name: "gsm8k_ppffn_N8_concat"
+seed: 1
+
+# Model Parameters
+model_id: "gpt2-medium"
+load_model_path: "None"
+save_path: "results/"
+
+# Dataset Parameters
+dataset_name: "gsm8k"
+train_path: "data/gsm8k/gsm_train.json"
+val_path: "data/gsm8k/gsm_valid.json"
+test_path: "data/gsm8k/gsm_test.json"
+max_seq_length: 1024
+no_cot: false
+
+# Training Hyperparameters
+lr: 1e-4
+weight_decay: 0.01
+batch_size_training: 4
+gradient_accumulation_steps: 8
+num_epochs: 4
+
+# Latent Loop / Coconut-Specific Parameters
+use_latent_loop: false       # CRITICAL: No latent loop for this PP-FFN ablation
+epochs_per_stage: null
+max_latent_stage: null
+c_thought: null
+pad_latent_to_max: null
+uniform_prob: null
+
+# PP-FFN Specific Parameters
+ppffn_num_paths: 8
+ppffn_path_intermediate_size: 768 # Example: (gpt2-medium hidden=1024). FFN intermediate typically 4*hidden.
+                                  # If total FFN params should be ~1 large FFN, then each path_intermediate_size
+                                  # would be (4*hidden_size_gpt2)/N. Or just set a fixed size.
+ppffn_aggregation_method: "concat_squeeze" # "sum", "gate"
+
+# Logging/Saving
+save_only_improve: true
+wandb_project: "ppffn_project_runs"
+debug: false
+metric_for_best_model: loss

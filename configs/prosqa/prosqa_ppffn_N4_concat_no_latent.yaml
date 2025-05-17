@@ -1,0 +1,45 @@
+# Experiment Identification
+project_name: "ppffn_latent_reasoning"
+experiment_name: "prosqa_ppffn_N4_concat_no_latent"
+seed: 1
+
+# Model Parameters
+model_id: "gpt2-medium"
+load_model_path: "None"
+save_path: "results/"
+
+# Dataset Parameters
+dataset_name: "prosqa"
+train_path: "data/prosqa/prosqa_train.json"
+val_path: "data/prosqa/prosqa_valid.json"
+test_path: "data/prosqa/prosqa_test.json"
+max_seq_length: 1024
+
+# Training Hyperparameters
+lr: 1e-4
+weight_decay: 0.01
+batch_size_training: 4
+gradient_accumulation_steps: 8
+num_epochs: 12
+
+# Latent Loop / Coconut-Specific Parameters
+use_latent_loop: true
+epochs_per_stage: 2
+max_latent_stage: 6
+c_thought: 1
+pad_latent_to_max: true
+uniform_prob: 0.0
+no_cot: false
+
+# PP-FFN Specific Parameters
+ppffn_num_paths: 4
+ppffn_path_intermediate_size: 1024 # For gpt2-medium (hidden 1024).
+                                   # If base FFN intermediate is 4096, and N=4 paths,
+                                   # each path could have intermediate_size 1024.
+ppffn_aggregation_method: "concat_squeeze"
+
+# Logging/Saving
+save_only_improve: true
+wandb_project: "ppffn_project_runs"
+debug: false
+metric_for_best_model: loss

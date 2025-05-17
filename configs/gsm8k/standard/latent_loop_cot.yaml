@@ -1,0 +1,44 @@
+# Experiment Identification
+project_name: "ppffn_latent_reasoning"
+experiment_name: "gsm8k_base_latent_loop_cot"
+seed: 1
+
+# Model Parameters
+model_id: "gpt2-medium"
+load_model_path: "None"
+save_path: "results/"
+
+# Dataset Parameters
+dataset_name: "gsm8k"
+train_path: "data/gsm8k/gsm_train.json"
+val_path: "data/gsm8k/gsm_valid.json"
+test_path: "data/gsm8k/gsm_test.json"
+max_seq_length: 1024
+no_cot: false
+
+# Training Hyperparameters
+lr: 1e-4
+weight_decay: 0.01
+batch_size_training: 4  # Latent loops can be more memory intensive
+gradient_accumulation_steps: 8 # Effective batch size = 2 * 8 = 16
+num_epochs: 4
+
+# Latent Loop / Coconut-Specific Parameters
+use_latent_loop: true   # CRITICAL: Enable latent loop
+epochs_per_stage: 2
+max_latent_stage: 3     # Max number of language steps to replace
+c_thought: 2            # Latent thoughts per language step (Coconut paper used 2 for GSM8k)
+# k_latent_steps_total: will be calculated as max_latent_stage * c_thought by script
+pad_latent_to_max: true
+uniform_prob: 0.0       # Probability of randomizing stage during training
+
+# PP-FFN Specific Parameters
+ppffn_num_paths: null
+ppffn_path_intermediate_size: null
+ppffn_aggregation_method: null
+
+# Logging/Saving
+save_only_improve: true
+wandb_project: "ppffn_project_runs"
+debug: false
+metric_for_best_model: loss

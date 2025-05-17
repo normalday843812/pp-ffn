@@ -1,0 +1,44 @@
+# Experiment Identification
+project_name: "ppffn_latent_reasoning"
+experiment_name: "prosqa_base_latent"
+seed: 1
+
+# Model Parameters
+model_id: "gpt2-medium"
+load_model_path: "None"
+save_path: "results/"
+
+# Dataset Parameters
+dataset_name: "prosqa"
+train_path: "data/prosqa/prosqa_train.json"
+val_path: "data/prosqa/prosqa_valid.json"
+test_path: "data/prosqa/prosqa_test.json"
+max_seq_length: 1024
+
+# Training Hyperparameters (Keep consistent with prosqa_ppffn_latent.yaml)
+lr: 1e-4
+weight_decay: 0.01
+batch_size_training: 4
+gradient_accumulation_steps: 8
+num_epochs: 12 # Example: 6 stages * 2 epochs/stage
+
+# Latent Loop / Coconut-Specific Parameters
+use_latent_loop: true # CRITICAL: Enable latent loop
+epochs_per_stage: 2
+max_latent_stage: 6   # ProsQA might have up to 6 reasoning steps (as per Coconut paper)
+c_thought: 1          # Coconut paper used 1 for logical reasoning tasks
+# k_latent_steps_total: will be calculated as max_latent_stage * c_thought
+pad_latent_to_max: true
+uniform_prob: 0.0
+no_cot: false
+
+# PP-FFN Specific Parameters (Not applicable)
+ppffn_num_paths: null
+ppffn_path_intermediate_size: null
+ppffn_aggregation_method: null
+
+# Logging/Saving
+save_only_improve: true
+wandb_project: "ppffn_project_runs"
+debug: false
+metric_for_best_model: loss
