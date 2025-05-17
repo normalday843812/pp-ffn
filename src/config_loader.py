@@ -1,5 +1,3 @@
-# src/config_loader.py
-
 import yaml
 import argparse
 import os
@@ -13,12 +11,9 @@ class SimpleConfig:
     Nested dictionaries are also converted to SimpleConfig objects.
     """
     def __init__(self, config_dict: Dict[str, Any]):
-        # Store the original dict for __str__ and to_dict methods
         self._config_dict = config_dict
         for key, value in config_dict.items():
-            # Ensure keys are valid attribute names for direct attribute access
-            # This is a basic check; more robust validation might be needed for all edge cases.
-            processed_key = key.replace('-', '_') # Convert hyphens to underscores for attribute names
+            processed_key = key.replace('-', '_')
             if not processed_key.isidentifier():
                 print(f"Warning: Config key '{key}' (processed as '{processed_key}') is not a valid Python identifier and will not be directly accessible as an attribute using dot notation. Use .get('{key}') instead.")
             setattr(self, processed_key, self._parse_value(value))
@@ -42,23 +37,18 @@ class SimpleConfig:
         processed_key = key.replace('-', '_')
         if hasattr(self, processed_key):
             return getattr(self, processed_key)
-        # Fallback for keys that couldn't be set as attributes or if user uses original key
         if self._config_dict is not None and key in self._config_dict:
-             # Reparse here to ensure nested dicts become SimpleConfig objects even via this path
             return self._parse_value(self._config_dict[key])
         return default
 
     def __repr__(self) -> str:
-        # Represent the config by showing its attributes (excluding internal _config_dict)
         attrs = {k: v for k, v in self.__dict__.items() if k != '_config_dict'}
         return f"SimpleConfig({attrs})"
 
     def __str__(self) -> str:
-        # Pretty print the original dictionary structure using YAML
-        # This is often more readable for nested structures
         try:
             return yaml.dump(self._config_dict, indent=2, default_flow_style=False, sort_keys=False)
-        except Exception: # Fallback if _config_dict is not yaml-dumpable for some reason
+        except Exception:
             return repr(self)
 
 
@@ -95,56 +85,3 @@ def load_config(config_path: str) -> SimpleConfig:
             raise e
 
     return SimpleConfig(config_dict)
-
-# This block allows testing the script directly
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Load and test a YAML configuration file.")
-    parser.add_argument(
-        "config_file_path",
-        type=str,
-        help="Path to the YAML configuration file (e.g., ../configs/gsm8k_base_sft.yaml)"
-    )
-    args = parser.parse_args()
-
-    print(f"Attempting to load configuration from: {args.config_file_path}")
-
-    try:
-        config = load_config(args.config_file_path)
-
-        print("\n--- Configuration Loaded Successfully ---")
-        print("String representation (YAML dump of original dict):")
-        print(config) # This will use __str__
-
-        print("\n--- Accessing some specific values: ---")
-        # Using .get() for safety, especially if keys might be missing or have special chars
-        print(f"Project Name: {config.get('project_name', 'Not Specified')}")
-        print(f"Model ID (attribute access): {config.model_id if hasattr(config, 'model_id') else 'Not Specified'}")
-        print(f"Learning Rate (get method): {config.get('lr', 'Not Specified')}")
-        print(f"Batch Size Training (attribute access, was batch_size_training): {config.batch_size_training if hasattr(config, 'batch_size_training') else 'Not Specified'}")
-
-
-        print("\n--- Example of a potentially hyphenated key from YAML (if it existed): ---")
-        # If your YAML had "my-parameter: value", it would be config.my_parameter
-        # We'll test with a key that's not in the current examples for demonstration
-        print(f"Value for 'a-hyphenated-key': {config.get('a-hyphenated-key', 'Default for hyphenated')}")
-
-
-        print("\n--- Testing non-existent key with default: ---")
-        print(f"A non_existent_key: {config.get('non_existent_key_123', 'DefaultValueForMissing')}")
-
-        print("\n--- Testing direct attribute access for a known valid key: ---")
-        if hasattr(config, 'seed'):
-            print(f"Seed (direct attribute): {config.seed}")
-        else:
-            print("'seed' attribute not found.")
-
-        print("\n--- To run this test from the project root directory: ---")
-        print("python src/config_loader.py configs/your_config_file.yaml")
-        print("Example: python src/config_loader.py configs/gsm8k_base_sft.yaml")
-
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-    except yaml.YAMLError as e:
-        print(f"YAML Parsing Error: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")

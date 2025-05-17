@@ -1,4 +1,3 @@
-# src/train.py
 import argparse
 import os
 import sys
@@ -22,7 +21,7 @@ from transformers import (
     get_scheduler
 )
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.generation import GenerationMixin # For custom models using generate()
+from transformers.generation import GenerationMixin
 from tqdm import tqdm
 
 from .config_loader import load_config, SimpleConfig
@@ -34,8 +33,8 @@ from .dataset_utils import (
 )
 from .model_ppffn import GPT2LMHeadModelWithPPFFN
 
-if TYPE_CHECKING: # To satisfy Pylance/Mypy for conditional imports
-    import wandb # Should only be imported for type checking here
+if TYPE_CHECKING:
+    import wandb
 
 try:
     import wandb as actual_wandb # Use an alias to avoid confusion if wandb is None
@@ -65,9 +64,6 @@ def get_dataset_length_estimate(file_path: Optional[str]) -> int:
     if not file_path or not os.path.exists(file_path):
         return 0
     try:
-        # This estimates based on lines; for actual JSON, parsing is needed,
-        # but this is for LR scheduler, so an approximation is okay.
-        # If dataset_utils.py loads full JSON, it could return actual length.
         with open(file_path, 'r', encoding='utf-8') as f:
             return sum(1 for _ in f)
     except Exception:
@@ -83,7 +79,6 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
         super().__init__(base_causallm.config)
         self.base_causallm = base_causallm
         self.latent_token_id = latent_token_id
-        # self.eos_token_id = eos_token_id # Available via self.config.eos_token_id
 
         if hasattr(self.base_causallm, 'get_input_embeddings'):
             self.embedding_layer = self.base_causallm.get_input_embeddings()
@@ -123,18 +118,17 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
 
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-        if past_key_values is not None: # If past_key_values are provided, it's a generation step (likely after the first token)
+        if past_key_values is not None:
             return self.base_causallm(
                 input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
                 past_key_values=past_key_values, output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states, use_cache=use_cache, labels=labels
             )
 
-        # Logic for handling latent steps during training or the first step of generation
+        # For handling latent steps during training or first step of generation
         batch_size, seq_len = input_ids.shape
-        current_inputs_embeds = self.embedding_layer(input_ids) # Get initial embeddings
+        current_inputs_embeds = self.embedding_layer(input_ids)
         
-        # Find all occurrences of the latent_token_id
         latent_indices_flat = (input_ids == self.latent_token_id).nonzero(as_tuple=False)
         
         # Group latent token indices by batch instance
@@ -150,35 +144,31 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
         max_latents_in_any_instance = max(len(l) for l in latent_lists_by_instance) if any(latent_lists_by_instance) else 0
 
         collected_logits_segments: List[torch.Tensor] = []
-        current_kv_cache_for_passes: Optional[Tuple[Tuple[torch.Tensor]]] = None # KV cache for iterative passes
-        hidden_states_kv_offset = 0 # Tracks the start of the current segment relative to original input_ids
+        current_kv_cache_for_passes: Optional[Tuple[Tuple[torch.Tensor]]] = None
+        hidden_states_kv_offset = 0
 
         # Iterate for each latent step + 1 final pass for remaining tokens
         for pass_idx in range(max_latents_in_any_instance + 1):
             segment_start_original_idx = hidden_states_kv_offset
-            segment_end_original_idx = seq_len # Default to end of sequence for the last pass
+            segment_end_original_idx = seq_len
 
             if pass_idx < max_latents_in_any_instance:
-                # Determine the end of the current segment: up to and including the current latent token
-                min_latent_pos_this_pass = seq_len # Initialize to a value that won't be chosen if no latents this pass
+                min_latent_pos_this_pass = seq_len
                 has_latents_this_pass_globally = False
                 for b_idx_instance in range(batch_size):
                     if pass_idx < len(latent_lists_by_instance[b_idx_instance]):
-                        # Smallest position of the current (pass_idx-th) latent token across the batch
                         min_latent_pos_this_pass = min(min_latent_pos_this_pass, latent_lists_by_instance[b_idx_instance][pass_idx])
                         has_latents_this_pass_globally = True
                 
-                # The segment ends right after the current latent token we are processing
                 segment_end_original_idx = min_latent_pos_this_pass + 1 if has_latents_this_pass_globally else segment_start_original_idx
 
 
-            if segment_start_original_idx >= segment_end_original_idx: # No tokens in this segment
-                if pass_idx >= max_latents_in_any_instance and segment_start_original_idx >= seq_len: # All processed
+            if segment_start_original_idx >= segment_end_original_idx:
+                if pass_idx >= max_latents_in_any_instance and segment_start_original_idx >= seq_len:
                     break 
-                else: # Skip if empty segment but not done
+                else:
                     continue 
 
-            # Prepare inputs for the current segment
             segment_inputs_embeds = current_inputs_embeds[:, segment_start_original_idx:segment_end_original_idx, :]
             
             # Attention mask needs to be sliced correctly for the current segment, considering past KV cache
@@ -188,60 +178,52 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
             if position_ids is not None:
                 current_segment_position_ids = position_ids[:, segment_start_original_idx:segment_end_original_idx]
 
-            # Forward pass through the base model for this segment
             outputs = self.base_causallm(
                 inputs_embeds=segment_inputs_embeds,
                 attention_mask=current_segment_attention_mask, 
                 position_ids=current_segment_position_ids,
                 past_key_values=current_kv_cache_for_passes,
-                output_hidden_states=True, # Need hidden states to update embeddings
-                use_cache=True # Essential for iterative processing
+                output_hidden_states=True,
+                use_cache=True
             )
 
             collected_logits_segments.append(outputs.logits)
-            if use_cache: # Should always be true for this logic
+            if use_cache:
                 current_kv_cache_for_passes = outputs.past_key_values
             else:
-                current_kv_cache_for_passes = None # Should not happen
+                current_kv_cache_for_passes = None
 
-            # If this isn't the last pass, update embeddings for the *next* latent token
             if pass_idx < max_latents_in_any_instance:
-                hidden_states_from_output = outputs.hidden_states[-1] # Last layer hidden states for this segment
+                hidden_states_from_output = outputs.hidden_states[-1]
                 
                 for b_idx in range(batch_size):
                     if pass_idx < len(latent_lists_by_instance[b_idx]):
-                        # This is the latent token whose embedding we are about to use/modify
                         latent_token_original_pos = latent_lists_by_instance[b_idx][pass_idx]
-                        # The hidden state that *produces* this latent token's new embedding is from the token *before* it
                         producing_token_original_pos = latent_token_original_pos - 1 
                         
                         if producing_token_original_pos >= 0:
-                            # Index of the producing token within the *current segment's* hidden_states_from_output
+                            # Index of producing token within current segment's hidden_states_from_output
                             idx_in_segment = producing_token_original_pos - segment_start_original_idx
                             
                             if 0 <= idx_in_segment < hidden_states_from_output.shape[1]:
-                                # Update the embedding of the *current* latent token in the *original* input_embeds tensor
-                                # This updated embedding will be used if this latent token is part of a *future* segment's input
                                 current_inputs_embeds[b_idx, latent_token_original_pos, :] = \
                                     hidden_states_from_output[b_idx, idx_in_segment, :]
             
-            hidden_states_kv_offset = segment_end_original_idx # Move offset for next segment
-            if hidden_states_kv_offset >= seq_len: # Processed all tokens
+            hidden_states_kv_offset = segment_end_original_idx
+            if hidden_states_kv_offset >= seq_len:
                 break
         
         # Concatenate logits from all segments
         if collected_logits_segments:
             final_logits = torch.cat(collected_logits_segments, dim=1)
-            # Ensure final_logits has the same sequence length as original input_ids, pad if necessary
             if final_logits.shape[1] < seq_len:
                  padding_needed = seq_len - final_logits.shape[1]
-                 # Use a very small number for padding logits to avoid affecting softmax significantly
-                 padding_tensor = torch.full((batch_size, padding_needed, final_logits.shape[2]), -1e9, # Or float('-inf')
+                 padding_tensor = torch.full((batch_size, padding_needed, final_logits.shape[2]), -1e9,
                                              device=final_logits.device, dtype=final_logits.dtype)
                  final_logits = torch.cat([final_logits, padding_tensor], dim=1)
-        elif seq_len > 0 : # No logits collected but input_ids had tokens (e.g. only latent tokens and no text output)
+        elif seq_len > 0 :
             vocab_size = self.config.vocab_size
-            # Create dummy logits if no segments produced any (should be rare if seq_len > 0)
+            # Create dummy logits if no segments produced any 
             final_logits = torch.full((batch_size, seq_len, vocab_size), -1e9,
                                       device=input_ids.device, dtype=current_inputs_embeds.dtype)
         else: # seq_len is 0
@@ -250,24 +232,23 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
 
 
         loss = None
-        if labels is not None and final_logits.numel() > 0 and final_logits.shape[1] > 1: # Ensure there's something to calculate loss on
-            # Standard cross-entropy loss calculation
+        if labels is not None and final_logits.numel() > 0 and final_logits.shape[1] > 1:
             shift_logits = final_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = nn.CrossEntropyLoss() # Ignores IGNORE_INDEX by default
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        elif labels is not None: # If labels are provided but no valid logits (e.g. seq_len <=1), loss is 0
+        elif labels is not None:
             loss = torch.tensor(0.0, device=final_logits.device, dtype=final_logits.dtype)
 
 
         if not use_cache: # This should ideally be true for generation to work across calls
-            current_kv_cache_for_passes = None # Reset if not using cache
+            current_kv_cache_for_passes = None
 
         return CausalLMOutputWithPast(
             loss=loss,
             logits=final_logits,
-            past_key_values=current_kv_cache_for_passes, # Return the final KV cache
-            hidden_states=None, # Not returning intermediate hidden states of all passes for simplicity
+            past_key_values=current_kv_cache_for_passes,
+            hidden_states=None,
             attentions=None
         )
 
@@ -297,14 +278,13 @@ def parse_generated_answer(generated_text: str, dataset_name: Optional[str]) -> 
 def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedTokenizerBase,
              device: torch.device, config: SimpleConfig, special_token_ids: Dict[str, int],
              epoch_num: int, wandb_run_obj: Optional[Any]
-             ) -> Tuple[float, float, float, float]: # Added return types for new metrics
+             ) -> Tuple[float, float, float, float]:
     model.eval()
     total_eval_loss = 0.0
     all_parsed_predictions: List[str] = []
     all_ground_truths: List[str] = []
     eval_samples_logged_wandb = 0
     
-    # Metrics to add
     all_newly_generated_token_counts: List[int] = []
     total_inference_time_seconds: float = 0.0
     num_inference_samples: int = 0
@@ -338,10 +318,10 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
 
     val_progress_bar = tqdm(dataloader, desc=f"Epoch {epoch_num+1} Validation", dynamic_ncols=True, leave=False)
     for batch in val_progress_bar:
-        original_indices_batch = batch.pop("original_idx", torch.tensor([-1], device=device)) # Pop before sending to device
+        original_indices_batch = batch.pop("original_idx", torch.tensor([-1], device=device))
         batch_on_device = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-        outputs = model(**batch_on_device) # Calculate loss on the validation batch
+        outputs = model(**batch_on_device)
         if outputs.loss is not None: total_eval_loss += outputs.loss.item() * batch_on_device["input_ids"].shape[0] # Weighted by batch size
 
         # Generation for accuracy and other metrics
@@ -376,11 +356,9 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
             )
             inference_end_time = time.time()
             total_inference_time_seconds += (inference_end_time - inference_start_time)
-            num_inference_samples += 1 # Increment for each sample generated
+            num_inference_samples += 1
 
             prompt_len = current_input_ids.shape[1]
-            # Ensure generated_ids[0] is used as generate might return a batch if input_ids was batched,
-            # even if we process one by one here.
             generated_tokens_only = generated_ids[0, prompt_len:] 
             num_newly_generated = len(generated_tokens_only)
             all_newly_generated_token_counts.append(num_newly_generated)
@@ -390,25 +368,24 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
             all_parsed_predictions.append(parsed_prediction)
 
             ground_truth_ans = ground_truth_answers_map.get(current_original_idx)
-            if ground_truth_ans is not None: # Should always be true due to earlier check
-                all_ground_truths.append(ground_truth_ans)
-                if WANDB_IMPORTED and wandb_run_obj and eval_samples_logged_wandb < int(config.get('wandb_log_eval_samples', 3)):
-                    log_entry = {
-                        f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_prompt": tokenizer.decode(current_input_ids[0], skip_special_tokens=False),
-                        f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_full": tokenizer.decode(generated_ids[0], skip_special_tokens=True),
-                        f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_answer_part": generated_text,
-                        f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_parsed_prediction": parsed_prediction,
-                        f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_ground_truth": ground_truth_ans
-                    }
-                    wandb_run_obj.log(log_entry)
-                    eval_samples_logged_wandb += 1
+            all_ground_truths.append(ground_truth_ans)
+            if WANDB_IMPORTED and wandb_run_obj and eval_samples_logged_wandb < int(config.get('wandb_log_eval_samples', 3)):
+                log_entry = {
+                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_prompt": tokenizer.decode(current_input_ids[0], skip_special_tokens=False),
+                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_full": tokenizer.decode(generated_ids[0], skip_special_tokens=True),
+                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_answer_part": generated_text,
+                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_parsed_prediction": parsed_prediction,
+                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_ground_truth": ground_truth_ans
+                }
+                wandb_run_obj.log(log_entry)
+                eval_samples_logged_wandb += 1
     
     # Calculate averages
     num_eval_batches = len(dataloader)
-    avg_val_loss = total_eval_loss / num_eval_batches if num_eval_batches > 0 else float('inf') # Corrected: was not dividing by total samples for loss
+    avg_val_loss = total_eval_loss / num_eval_batches if num_eval_batches > 0 else float('inf')
 
     accuracy = 0.0
-    if all_parsed_predictions and len(all_parsed_predictions) == len(all_ground_truths): # Ensure lists are not empty
+    if all_parsed_predictions and len(all_parsed_predictions) == len(all_ground_truths):
         correct_predictions = sum(1 for pred, gt in zip(all_parsed_predictions, all_ground_truths) if pred == gt)
         accuracy = correct_predictions / len(all_parsed_predictions) if len(all_parsed_predictions) > 0 else 0.0
     
@@ -419,7 +396,7 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
     print(f"Epoch {epoch_num+1} Avg Newly Generated Tokens: {avg_newly_generated_tokens:.2f}")
     print(f"Epoch {epoch_num+1} Avg Inference Time per Sample: {avg_inference_time_per_sample:.4f} seconds")
 
-    model.train() # Set model back to training mode
+    model.train()
     return avg_val_loss, accuracy, avg_newly_generated_tokens, avg_inference_time_per_sample
 
 
@@ -513,13 +490,11 @@ def main():
         )
     model_to_train.to(device)
 
-    # --- METRIC: Model Parameter Count ---
     total_params = sum(p.numel() for p in model_to_train.parameters() if p.requires_grad)
     active_params = sum(p.numel() for p in model_to_train.parameters() if p.requires_grad and p.is_floating_point())
     print(f"Experiment: {config.experiment_name}")
     print(f"  Total Trainable Parameters: {total_params:,}")
     print(f"  Active Floating Point Parameters: {active_params:,}")
-    # --- END METRIC ---
 
     optimizer_lr = float(config.lr) 
     optimizer_weight_decay = float(config.get('weight_decay', 0.01)) 
@@ -576,10 +551,8 @@ def main():
     if WANDB_IMPORTED and not bool(config.get('debug', False)) and bool(config.get('use_wandb', True)):
         try:
             wandb_config_log = config.to_dict()
-            # --- METRIC: Add parameter counts to WandB config ---
             wandb_config_log["trainable_parameters_total"] = total_params
             wandb_config_log["trainable_parameters_active_fp"] = active_params
-            # --- END METRIC ---
             wandb_run_obj = actual_wandb.init(
                 project=config.get('wandb_project', 'default-project'), 
                 name=config.experiment_name, 
@@ -597,9 +570,7 @@ def main():
     grad_accum_steps = int(config.get('gradient_accumulation_steps', 1))
 
     for epoch in range(num_epochs):
-        # --- METRIC: Time per Training Epoch ---
         epoch_start_time = time.time()
-        # --- END METRIC ---
 
         model_to_train.train()
         current_epoch_stage = 0
@@ -664,7 +635,6 @@ def main():
         avg_epoch_train_loss = epoch_total_train_loss / len(train_dataloader) if len(train_dataloader) > 0 else float('inf')
         print(f"Epoch {epoch+1} Avg Train Loss (per batch): {avg_epoch_train_loss:.4f}")
         
-        # --- METRIC: Log epoch duration and avg train loss ---
         epoch_end_time = time.time()
         epoch_duration_seconds = epoch_end_time - epoch_start_time
         print(f"Epoch {epoch+1} Training Duration: {epoch_duration_seconds:.2f} seconds")
@@ -675,32 +645,28 @@ def main():
                 "train/epoch_duration_seconds": epoch_duration_seconds,
                 "epoch": epoch + 1
             }
-        # --- END METRIC ---
 
         if base_val_dataset is not None and base_val_dataset.num_rows > 0:
+            num_val_map_processors = min(4, os.cpu_count() if os.cpu_count() else 1) 
             formatted_val_dataset = base_val_dataset.map(
                 format_sample_for_training, fn_kwargs=fn_kwargs_for_formatting,
-                load_from_cache_file=False, num_proc=num_map_processors, desc=f"Formatting val data for epoch {epoch+1}"
+                load_from_cache_file=False, num_proc=num_val_map_processors, desc=f"Formatting val data for epoch {epoch+1}"
             )
             val_dataloader = DataLoader(
-                formatted_val_dataset, batch_size=int(config.get('batch_size_eval', 1)), # Use a specific eval batch size
+                formatted_val_dataset, batch_size=int(config.get('batch_size_eval', 1)),
                 collate_fn=data_collator, num_workers=int(config.get('num_workers', 0))
             )
-            # --- METRIC: Call evaluate and get new metrics ---
             avg_val_loss, val_accuracy, avg_newly_generated_tokens, avg_inference_time_per_sample = evaluate(
                 model_to_train, val_dataloader, tokenizer, device, config, special_token_ids, epoch, wandb_run_obj
             )
-            # Note: evaluate() now prints these new metrics to console internally
-            # --- END METRIC ---
             
-            # Log all eval metrics to WandB
             if WANDB_IMPORTED and wandb_run_obj:
-                wandb_log_data.update({ # Add to existing wandb_log_data for this epoch
+                wandb_log_data.update({
                     "eval/epoch_loss": avg_val_loss, 
                     "eval/accuracy": val_accuracy, 
                     "eval/avg_newly_generated_tokens": avg_newly_generated_tokens,
                     "eval/avg_inference_time_sample_seconds": avg_inference_time_per_sample,
-                    "epoch_completed": epoch + 1 # Use a consistent epoch marker for eval
+                    "epoch_completed": epoch + 1
                 })
 
             current_metric_for_saving = val_accuracy if metric_mode == 'max' else avg_val_loss
@@ -734,7 +700,6 @@ def main():
         else: # No validation dataset
             print(f"Epoch {epoch+1}: Validation dataset is empty or not provided. Skipping evaluation and checkpointing.")
         
-        # Log accumulated data for the epoch to WandB (if not already logged for eval)
         if WANDB_IMPORTED and wandb_run_obj:
             if "eval/epoch_loss" not in wandb_log_data: # If eval didn't happen, ensure epoch is still logged
                  wandb_log_data["epoch_completed"] = epoch + 1
