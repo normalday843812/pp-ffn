@@ -1,4 +1,8 @@
-data/
+!data/prosqa/
+data/gsm8k/
+data/pontoqa/
 results/
 */__pycache__/
 wandb/
+*.whl
+dev-requirements.txt
