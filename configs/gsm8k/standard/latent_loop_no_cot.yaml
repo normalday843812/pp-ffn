@@ -19,9 +19,10 @@ no_cot: true
 # Training Hyperparameters
 lr: 1e-4
 weight_decay: 0.01
-batch_size_training: 4  # Latent loops can be more memory intensive
-gradient_accumulation_steps: 8 # Effective batch size = 2 * 8 = 16
+batch_size_training: 92  # Latent loops can be more memory intensive
+gradient_accumulation_steps: 1 # Effective batch size = 2 * 8 = 16
 num_epochs: 4
+num_workers: 16
 
 # Latent Loop / Coconut-Specific Parameters
 use_latent_loop: true   # CRITICAL: Enable latent loop

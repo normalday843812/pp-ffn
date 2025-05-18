@@ -96,7 +96,7 @@ def load_and_tokenize_raw_data(
     
     num_map_proc_config = config.get('num_map_processors', None)
     if num_map_proc_config is None: # Default if not in config
-        num_map_proc = os.cpu_count() if os.cpu_count() and os.cpu_count() > 1 else 1
+        num_map_proc = min(os.cpu_count(),32) if os.cpu_count() and os.cpu_count() > 1 else 1
     else:
         num_map_proc = int(num_map_proc_config)
 

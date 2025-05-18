@@ -18,8 +18,8 @@ max_seq_length: 1024
 # Training Hyperparameters (Keep consistent with prosqa_ppffn_latent.yaml)
 lr: 1e-4
 weight_decay: 0.01
-batch_size_training: 4
-gradient_accumulation_steps: 8
+batch_size_training: 92
+gradient_accumulation_steps: 1
 num_epochs: 12 # Example: 6 stages * 2 epochs/stage
 
 # Latent Loop / Coconut-Specific Parameters

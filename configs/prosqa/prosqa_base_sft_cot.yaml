@@ -18,9 +18,9 @@ max_seq_length: 1024
 # Training Hyperparameters
 lr: 3e-5
 weight_decay: 0.01
-batch_size_training: 4 # Adjust for your 4080
-gradient_accumulation_steps: 4
-num_epochs: 5 # Example, adjust based on convergence for ProsQA
+batch_size_training: 92
+gradient_accumulation_steps: 1
+num_epochs: 5
 
 # Latent Loop / Coconut-Specific Parameters
 use_latent_loop: false

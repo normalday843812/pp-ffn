@@ -5,14 +5,15 @@ import gc
 import json
 import random
 import re
-import yaml # For config loading exception
-import time # Added for timing
+import yaml
+import time
 from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -37,12 +38,12 @@ if TYPE_CHECKING:
     import wandb
 
 try:
-    import wandb as actual_wandb # Use an alias to avoid confusion if wandb is None
+    import wandb as actual_wandb
     WANDB_IMPORTED = True
 except ImportError:
     WANDB_IMPORTED = False
-    actual_wandb = None # Define for type checking even if not used
-    print("INFO: wandb not installed. Proceeding without Weights & Biases logging.")
+    actual_wandb = None
+    print("INFO: wandb not installed. Proceeding without W&B logging.")
 
 
 def set_seed(seed_value: int):
@@ -125,20 +126,18 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
                 output_hidden_states=output_hidden_states, use_cache=use_cache, labels=labels
             )
 
-        # For handling latent steps during training or first step of generation
         batch_size, seq_len = input_ids.shape
         current_inputs_embeds = self.embedding_layer(input_ids)
         
         latent_indices_flat = (input_ids == self.latent_token_id).nonzero(as_tuple=False)
         
-        # Group latent token indices by batch instance
         latent_lists_by_instance = [[] for _ in range(batch_size)]
         for i in range(latent_indices_flat.shape[0]):
             batch_idx = latent_indices_flat[i, 0].item()
             token_idx = latent_indices_flat[i, 1].item()
             latent_lists_by_instance[batch_idx].append(token_idx)
         
-        for b_idx in range(batch_size): # Sort them per instance
+        for b_idx in range(batch_size):
             latent_lists_by_instance[b_idx].sort()
 
         max_latents_in_any_instance = max(len(l) for l in latent_lists_by_instance) if any(latent_lists_by_instance) else 0
@@ -147,7 +146,6 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
         current_kv_cache_for_passes: Optional[Tuple[Tuple[torch.Tensor]]] = None
         hidden_states_kv_offset = 0
 
-        # Iterate for each latent step + 1 final pass for remaining tokens
         for pass_idx in range(max_latents_in_any_instance + 1):
             segment_start_original_idx = hidden_states_kv_offset
             segment_end_original_idx = seq_len
@@ -171,7 +169,6 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
 
             segment_inputs_embeds = current_inputs_embeds[:, segment_start_original_idx:segment_end_original_idx, :]
             
-            # Attention mask needs to be sliced correctly for the current segment, considering past KV cache
             current_segment_attention_mask = attention_mask[:, :segment_end_original_idx] if attention_mask is not None else None
             
             current_segment_position_ids = None
@@ -202,7 +199,6 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
                         producing_token_original_pos = latent_token_original_pos - 1 
                         
                         if producing_token_original_pos >= 0:
-                            # Index of producing token within current segment's hidden_states_from_output
                             idx_in_segment = producing_token_original_pos - segment_start_original_idx
                             
                             if 0 <= idx_in_segment < hidden_states_from_output.shape[1]:
@@ -213,7 +209,6 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
             if hidden_states_kv_offset >= seq_len:
                 break
         
-        # Concatenate logits from all segments
         if collected_logits_segments:
             final_logits = torch.cat(collected_logits_segments, dim=1)
             if final_logits.shape[1] < seq_len:
@@ -223,10 +218,9 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
                  final_logits = torch.cat([final_logits, padding_tensor], dim=1)
         elif seq_len > 0 :
             vocab_size = self.config.vocab_size
-            # Create dummy logits if no segments produced any 
             final_logits = torch.full((batch_size, seq_len, vocab_size), -1e9,
                                       device=input_ids.device, dtype=current_inputs_embeds.dtype)
-        else: # seq_len is 0
+        else: 
             final_logits = torch.empty((batch_size, 0, self.config.vocab_size), 
                                        device=input_ids.device, dtype=current_inputs_embeds.dtype)
 
@@ -235,13 +229,13 @@ class LatentStepModel(PreTrainedModel, GenerationMixin):
         if labels is not None and final_logits.numel() > 0 and final_logits.shape[1] > 1:
             shift_logits = final_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss() # Ignores IGNORE_INDEX by default
+            loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
         elif labels is not None:
             loss = torch.tensor(0.0, device=final_logits.device, dtype=final_logits.dtype)
 
 
-        if not use_cache: # This should ideally be true for generation to work across calls
+        if not use_cache:
             current_kv_cache_for_passes = None
 
         return CausalLMOutputWithPast(
@@ -260,24 +254,23 @@ def parse_generated_answer(generated_text: str, dataset_name: Optional[str]) -> 
     if hash_match: return hash_match.group(1).replace(",", "").strip()
 
     if "gsm8k" in dataset_name_lower:
-        # Fallback for GSM8k: try to find the last number
         numbers = re.findall(r"([\-0-9\.\,]+)", generated_text)
         if numbers: return numbers[-1].replace(",", "").strip()
 
-    if "prosqa" in dataset_name_lower: # Example for ProSQA, adjust if needed
-        if "###" in generated_text: # Assuming ### Answer format
+    if "prosqa" in dataset_name_lower:
+        if "###" in generated_text:
             answer_part = generated_text.split("###")[-1].strip()
             return answer_part.splitlines()[0].strip() if answer_part else ""
-        # Fallback: last non-empty line for ProSQA
         lines = [line.strip() for line in generated_text.splitlines() if line.strip()]
-        return lines[-1] if lines else generated_text.strip() # Return last line or full text
+        return lines[-1] if lines else generated_text.strip()
 
-    return generated_text.strip() # Generic fallback
+    return generated_text.strip()
 
 @torch.no_grad()
 def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedTokenizerBase,
              device: torch.device, config: SimpleConfig, special_token_ids: Dict[str, int],
-             epoch_num: int, wandb_run_obj: Optional[Any]
+             epoch_num: int, wandb_run_obj: Optional[Any],
+             use_amp: bool
              ) -> Tuple[float, float, float, float]:
     model.eval()
     total_eval_loss = 0.0
@@ -303,7 +296,7 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
                     if not isinstance(sample, dict):
                         print(f"Warning: Item {i} in {config.val_path} is not a dictionary. Skipping.")
                         continue
-                    original_idx = sample.get("idx", sample.get("original_idx", i)) # Prefer 'idx' if available
+                    original_idx = sample.get("idx", sample.get("original_idx", i))
                     answer = sample.get("answer")
                     if answer is not None:
                         ground_truth_answers_map[original_idx] = str(answer).strip().replace(",", "")
@@ -321,17 +314,17 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
         original_indices_batch = batch.pop("original_idx", torch.tensor([-1], device=device))
         batch_on_device = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-        outputs = model(**batch_on_device)
-        if outputs.loss is not None: total_eval_loss += outputs.loss.item() * batch_on_device["input_ids"].shape[0] # Weighted by batch size
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+            outputs = model(**batch_on_device)
+        if outputs.loss is not None: total_eval_loss += outputs.loss.item() * batch_on_device["input_ids"].shape[0]
 
-        # Generation for accuracy and other metrics
         for i in range(batch_on_device["input_ids"].shape[0]):
             current_input_ids = batch_on_device["input_ids"][i:i+1]
             current_attention_mask = batch_on_device["attention_mask"][i:i+1]
             current_original_idx = original_indices_batch[i].item()
 
             if current_original_idx == -1 or current_original_idx not in ground_truth_answers_map:
-                continue # Skip if no ground truth for this sample
+                continue
 
             max_new_tokens_eval = int(config.get('eval_max_new_tokens', 128))
             gen_kwargs = {
@@ -340,20 +333,21 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
                 "do_sample": bool(config.get('generate_do_sample', False)),
                 "num_beams": int(config.get('generate_num_beams', 1)),
             }
-            if not gen_kwargs["do_sample"]: # Remove temp and top_p if not sampling
+            if not gen_kwargs["do_sample"]:
                 gen_kwargs.pop("temperature", None); gen_kwargs.pop("top_p", None)
             
             pad_token_id_for_generate = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else special_token_ids['eos_token_id']
 
             inference_start_time = time.time()
-            generated_ids = model.generate(
-                input_ids=current_input_ids, 
-                attention_mask=current_attention_mask,
-                max_new_tokens=max_new_tokens_eval,
-                eos_token_id=special_token_ids['eos_token_id'],
-                pad_token_id=pad_token_id_for_generate,
-                **gen_kwargs
-            )
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                generated_ids = model.generate(
+                    input_ids=current_input_ids, 
+                    attention_mask=current_attention_mask,
+                    max_new_tokens=max_new_tokens_eval,
+                    eos_token_id=special_token_ids['eos_token_id'],
+                    pad_token_id=pad_token_id_for_generate,
+                    **gen_kwargs
+                )
             inference_end_time = time.time()
             total_inference_time_seconds += (inference_end_time - inference_start_time)
             num_inference_samples += 1
@@ -380,7 +374,6 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
                 wandb_run_obj.log(log_entry)
                 eval_samples_logged_wandb += 1
     
-    # Calculate averages
     num_eval_batches = len(dataloader)
     avg_val_loss = total_eval_loss / num_eval_batches if num_eval_batches > 0 else float('inf')
 
@@ -415,10 +408,16 @@ def main():
     print(f"Using device: {device}")
     if str(device) == "cuda": print(f"CUDA Device Name: {torch.cuda.get_device_name(0)}")
 
+    use_mixed_precision = bool(config.get('use_mixed_precision', True)) and torch.cuda.is_available()
+    if use_mixed_precision:
+        print("INFO: Using mixed precision training")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_mixed_precision)
+
     experiment_save_dir = os.path.join(config.get('save_path', 'results'), config.experiment_name)
     os.makedirs(experiment_save_dir, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_id, trust_remote_code=bool(config.get('trust_remote_code', False)))
+    tokenizer.deprecation_warnings["Asking-to-pad-a-fast-tokenizer"] = True
     if tokenizer.pad_token_id is None: 
         tokenizer.pad_token_id = tokenizer.eos_token_id
         print(f"Tokenizer '{config.model_id}' missing pad_token_id. Set to eos_token_id: {tokenizer.eos_token_id}")
@@ -553,6 +552,7 @@ def main():
             wandb_config_log = config.to_dict()
             wandb_config_log["trainable_parameters_total"] = total_params
             wandb_config_log["trainable_parameters_active_fp"] = active_params
+            wandb_config_log["use_mixed_precision"] = use_mixed_precision
             wandb_run_obj = actual_wandb.init(
                 project=config.get('wandb_project', 'default-project'), 
                 name=config.experiment_name, 
@@ -601,25 +601,33 @@ def main():
             batch.pop("original_idx", None) 
             batch_on_device = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-            outputs = model_to_train(**batch_on_device)
-            loss = outputs.loss
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_mixed_precision):
+                outputs = model_to_train(**batch_on_device)
+                loss = outputs.loss
 
             if loss is None or torch.isnan(loss) or torch.isinf(loss):
                 print(f"Warning: Epoch {epoch+1}, Step {step_in_epoch+1}: Invalid loss ({loss}). Skipping batch.")
                 cleanup_gpu_memory()
+                scaler.update()
+                optimizer.zero_grad()
                 continue
 
             current_batch_loss_value = loss.item()
-            if grad_accum_steps > 1: loss = loss / grad_accum_steps
-
-            loss.backward()
+            loss_to_backward = loss
+            if grad_accum_steps > 1: loss_to_backward = loss / grad_accum_steps
+            
+            scaler.scale(loss_to_backward).backward()
             epoch_total_train_loss += current_batch_loss_value
 
             if (step_in_epoch + 1) % grad_accum_steps == 0 or (step_in_epoch + 1) == len(train_dataloader):
                 max_grad_norm_cfg = config.get('max_grad_norm')
                 if max_grad_norm_cfg is not None:
+                    scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model_to_train.parameters(), float(max_grad_norm_cfg))
-                optimizer.step()
+                
+                scaler.step(optimizer)
+                scaler.update()
+                
                 if lr_scheduler: lr_scheduler.step()
                 optimizer.zero_grad()
                 global_optimizer_step_count +=1
@@ -657,7 +665,7 @@ def main():
                 collate_fn=data_collator, num_workers=int(config.get('num_workers', 0))
             )
             avg_val_loss, val_accuracy, avg_newly_generated_tokens, avg_inference_time_per_sample = evaluate(
-                model_to_train, val_dataloader, tokenizer, device, config, special_token_ids, epoch, wandb_run_obj
+                model_to_train, val_dataloader, tokenizer, device, config, special_token_ids, epoch, wandb_run_obj, use_mixed_precision # Pass use_amp
             )
             
             if WANDB_IMPORTED and wandb_run_obj:
@@ -679,29 +687,30 @@ def main():
                         print(f"Val metric ({metric_for_best}) improved from {best_val_metric:.4f} to {current_metric_for_saving:.4f}. Saving model.")
                         best_val_metric = current_metric_for_saving
                         save_checkpoint_this_epoch = True
-                else: # Save every epoch if save_only_improve is false
+                else: 
                     save_checkpoint_this_epoch = True
-                    if improved: best_val_metric = current_metric_for_saving # Still track best
+                    if improved: best_val_metric = current_metric_for_saving
 
                 if save_checkpoint_this_epoch:
                     checkpoint_name = f"checkpoint_epoch_{epoch+1}_val_{metric_for_best}_{current_metric_for_saving:.4f}"
                     checkpoint_path = os.path.join(experiment_save_dir, checkpoint_name)
                     
-                    # Ensure to save the base model if LatentStepModel is a wrapper
                     model_to_save = model_to_train.base_causallm if isinstance(model_to_train, LatentStepModel) else model_to_train
                     
                     model_to_save.save_pretrained(checkpoint_path)
                     tokenizer.save_pretrained(checkpoint_path)
                     try:
+                        config_to_save = config.to_dict()
+                        config_to_save['use_mixed_precision_effective'] = use_mixed_precision
                         with open(os.path.join(checkpoint_path, 'training_config.yaml'), 'w') as f_cfg:
-                            yaml.dump(config.to_dict(), f_cfg, sort_keys=False)
+                            yaml.dump(config_to_save, f_cfg, sort_keys=False)
                     except Exception as e_cfg: print(f"Warning: Could not save training config to checkpoint: {e_cfg}")
                     print(f"Saved checkpoint to {checkpoint_path}")
-        else: # No validation dataset
+        else: 
             print(f"Epoch {epoch+1}: Validation dataset is empty or not provided. Skipping evaluation and checkpointing.")
         
         if WANDB_IMPORTED and wandb_run_obj:
-            if "eval/epoch_loss" not in wandb_log_data: # If eval didn't happen, ensure epoch is still logged
+            if "eval/epoch_loss" not in wandb_log_data: 
                  wandb_log_data["epoch_completed"] = epoch + 1
             wandb_run_obj.log(wandb_log_data)
 

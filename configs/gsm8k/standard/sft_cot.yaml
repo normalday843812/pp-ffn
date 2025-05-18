@@ -19,10 +19,11 @@ no_cot: false
 # Training Hyperparameters
 lr: 3e-5
 weight_decay: 0.01
-batch_size_training: 4
-gradient_accumulation_steps: 4 # Effective batch size = 4 * 4 = 16
+batch_size_training: 92
+gradient_accumulation_steps: 1 # Effective batch size = 4 * 4 = 16
 num_epochs: 3
 optimizer_name: "adamw"
+num_workers: 16
 
 # Latent Loop / Coconut-Specific Parameters
 use_latent_loop: false # CRITICAL: No latent loop for this baseline
