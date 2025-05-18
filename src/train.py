@@ -276,7 +276,14 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
     total_eval_loss = 0.0
     all_parsed_predictions: List[str] = []
     all_ground_truths: List[str] = []
-    eval_samples_logged_wandb = 0
+    
+    eval_samples_table = None
+    if WANDB_IMPORTED and wandb_run_obj and int(config.get('wandb_log_eval_samples', 3)) > 0:
+        eval_samples_table = actual_wandb.Table(columns=[
+            "Epoch", "Original Index", "Prompt",
+            "Generated Full", "Generated Answer Part",
+            "Parsed Prediction", "Ground Truth"
+        ])
     
     all_newly_generated_token_counts: List[int] = []
     total_inference_time_seconds: float = 0.0
@@ -310,6 +317,9 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
         print("Warning: Ground truth answer map is empty. Validation accuracy will be 0.")
 
     val_progress_bar = tqdm(dataloader, desc=f"Epoch {epoch_num+1} Validation", dynamic_ncols=True, leave=False)
+    eval_samples_logged_count = 0
+    max_wandb_log_samples = int(config.get('wandb_log_eval_samples', 3))
+
     for batch in val_progress_bar:
         original_indices_batch = batch.pop("original_idx", torch.tensor([-1], device=device))
         batch_on_device = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
@@ -357,22 +367,26 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
             num_newly_generated = len(generated_tokens_only)
             all_newly_generated_token_counts.append(num_newly_generated)
 
-            generated_text = tokenizer.decode(generated_tokens_only, skip_special_tokens=True)
-            parsed_prediction = parse_generated_answer(generated_text, config.dataset_name)
+            prompt_text = tokenizer.decode(current_input_ids[0], skip_special_tokens=False)
+            generated_full_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+            generated_text_answer_part = tokenizer.decode(generated_tokens_only, skip_special_tokens=True)
+            parsed_prediction = parse_generated_answer(generated_text_answer_part, config.dataset_name)
             all_parsed_predictions.append(parsed_prediction)
 
             ground_truth_ans = ground_truth_answers_map.get(current_original_idx)
             all_ground_truths.append(ground_truth_ans)
-            if WANDB_IMPORTED and wandb_run_obj and eval_samples_logged_wandb < int(config.get('wandb_log_eval_samples', 3)):
-                log_entry = {
-                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_prompt": tokenizer.decode(current_input_ids[0], skip_special_tokens=False),
-                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_full": tokenizer.decode(generated_ids[0], skip_special_tokens=True),
-                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_generated_answer_part": generated_text,
-                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_parsed_prediction": parsed_prediction,
-                    f"eval_epoch_{epoch_num+1}/sample_{current_original_idx}_ground_truth": ground_truth_ans
-                }
-                wandb_run_obj.log(log_entry)
-                eval_samples_logged_wandb += 1
+
+            if eval_samples_table is not None and eval_samples_logged_count < max_wandb_log_samples:
+                eval_samples_table.add_data(
+                    epoch_num + 1,
+                    current_original_idx,
+                    prompt_text,
+                    generated_full_text,
+                    generated_text_answer_part,
+                    parsed_prediction,
+                    ground_truth_ans
+                )
+                eval_samples_logged_count += 1
     
     num_eval_batches = len(dataloader)
     avg_val_loss = total_eval_loss / num_eval_batches if num_eval_batches > 0 else float('inf')
@@ -388,6 +402,9 @@ def evaluate(model: nn.Module, dataloader: DataLoader, tokenizer: PreTrainedToke
     print(f"Epoch {epoch_num+1} Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.4f}")
     print(f"Epoch {epoch_num+1} Avg Newly Generated Tokens: {avg_newly_generated_tokens:.2f}")
     print(f"Epoch {epoch_num+1} Avg Inference Time per Sample: {avg_inference_time_per_sample:.4f} seconds")
+
+    if WANDB_IMPORTED and wandb_run_obj and eval_samples_table is not None:
+         wandb_run_obj.log({f"eval_epoch_{epoch_num+1}/evaluation_samples": eval_samples_table})
 
     model.train()
     return avg_val_loss, accuracy, avg_newly_generated_tokens, avg_inference_time_per_sample
@@ -423,7 +440,7 @@ def main():
         print(f"Tokenizer '{config.model_id}' missing pad_token_id. Set to eos_token_id: {tokenizer.eos_token_id}")
 
     special_tokens_to_add = ["<|start-latent|>", "<|end-latent|>", "<|latent|>"]
-    num_added_toks = tokenizer.add_special_tokens({'additional_special_tokens': special_tokens_to_add})
+    num_added_toks = tokenizer.add_special_tokens({'additional_special_toekens': special_tokens_to_add})
     if num_added_toks > 0: print(f"Added {num_added_toks} new special tokens to tokenizer.")
 
     special_token_ids = {
