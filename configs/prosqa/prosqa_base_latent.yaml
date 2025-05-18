@@ -20,7 +20,7 @@ lr: 1e-4
 weight_decay: 0.01
 batch_size_training: 92
 gradient_accumulation_steps: 1
-num_epochs: 12 # Example: 6 stages * 2 epochs/stage
+num_epochs: 9 # Example: 6 stages * 2 epochs/stage
 
 # Latent Loop / Coconut-Specific Parameters
 use_latent_loop: true # CRITICAL: Enable latent loop
